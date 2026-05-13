@@ -27,19 +27,31 @@ export async function POST(request: Request) {
     return badRequest("idToken is required.");
   }
 
-  const decoded = await verifyFirebaseIdToken(body.idToken);
-  const limitResponse = checkRateLimit({
-    key: `oauth-start:${decoded.uid}:${clientIp(request)}`,
-    limit: 10,
-    windowMs: 60_000
-  });
-  if (limitResponse) {
-    return limitResponse;
+  try {
+    const decoded = await verifyFirebaseIdToken(body.idToken);
+    const limitResponse = checkRateLimit({
+      key: `oauth-start:${decoded.uid}:${clientIp(request)}`,
+      limit: 10,
+      windowMs: 60_000
+    });
+    if (limitResponse) {
+      return limitResponse;
+    }
+
+    const state = createOAuthState(decoded.uid);
+
+    return NextResponse.json({
+      authUrl: buildGoogleAuthUrl(state)
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to start Google Calendar connection."
+      },
+      { status: 500 }
+    );
   }
-
-  const state = createOAuthState(decoded.uid);
-
-  return NextResponse.json({
-    authUrl: buildGoogleAuthUrl(state)
-  });
 }

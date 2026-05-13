@@ -84,43 +84,43 @@ export async function POST(request: Request) {
     );
   }
 
-  const decoded = await verifyFirebaseIdToken(body.idToken);
-  const limitResponse = checkRateLimit({
-    key: `calendar-events:${decoded.uid}:${clientIp(request)}`,
-    limit: 12,
-    windowMs: 60_000
-  });
-  if (limitResponse) {
-    return limitResponse;
-  }
-
-  const accessToken = await getGoogleAccessToken(decoded.uid);
-
-  const authHeaders = {
-    Authorization: `Bearer ${accessToken}`
-  };
-
-  const calendarListResponse = await fetch(
-    "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-    { headers: authHeaders }
-  );
-
-  if (!calendarListResponse.ok) {
-    return NextResponse.json(
-      { error: "Unable to read Google Calendar list" },
-      { status: calendarListResponse.status }
-    );
-  }
-
-  const calendarList = (await calendarListResponse.json()) as {
-    items?: GoogleCalendarListEntry[];
-  };
-
-  const calendars = (calendarList.items ?? []).filter(
-    (calendar) => calendar.selected !== false
-  );
-
   try {
+    const decoded = await verifyFirebaseIdToken(body.idToken);
+    const limitResponse = checkRateLimit({
+      key: `calendar-events:${decoded.uid}:${clientIp(request)}`,
+      limit: 12,
+      windowMs: 60_000
+    });
+    if (limitResponse) {
+      return limitResponse;
+    }
+
+    const accessToken = await getGoogleAccessToken(decoded.uid);
+
+    const authHeaders = {
+      Authorization: `Bearer ${accessToken}`
+    };
+
+    const calendarListResponse = await fetch(
+      "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+      { headers: authHeaders }
+    );
+
+    if (!calendarListResponse.ok) {
+      return NextResponse.json(
+        { error: "Unable to read Google Calendar list" },
+        { status: calendarListResponse.status }
+      );
+    }
+
+    const calendarList = (await calendarListResponse.json()) as {
+      items?: GoogleCalendarListEntry[];
+    };
+
+    const calendars = (calendarList.items ?? []).filter(
+      (calendar) => calendar.selected !== false
+    );
+
     const results = await Promise.all(
       calendars.map(async (calendar, index) => {
         const color =
@@ -203,7 +203,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Unable to read Google Calendar events"
+            : "Unable to load Google Calendar events"
       },
       { status: 502 }
     );

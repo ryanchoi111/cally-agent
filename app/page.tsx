@@ -90,6 +90,25 @@ type PositionedTimedEvent = {
 const dayHours = Array.from({ length: 24 }, (_, hour) => hour);
 const hourHeight = 64;
 
+async function readJsonResponse<T>(response: Response) {
+  const text = await response.text();
+
+  if (!text.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function readErrorMessage(response: Response, fallback: string) {
+  const body = await readJsonResponse<{ error?: string }>(response);
+  return body?.error || fallback;
+}
+
 function monthDays(viewDate: Date) {
   const start = startOfWeek(startOfMonth(viewDate));
   const end = endOfWeek(endOfMonth(viewDate));
@@ -946,11 +965,14 @@ export default function Home() {
     });
 
     if (!response.ok) {
-      const body = (await response.json()) as { error?: string };
-      throw new Error(body.error ?? "Unable to load calendar events.");
+      throw new Error(await readErrorMessage(response, "Unable to load calendar events."));
     }
 
-    const body = (await response.json()) as { events: CalendarEvent[] };
+    const body = await readJsonResponse<{ events?: CalendarEvent[] }>(response);
+    if (!body || !Array.isArray(body.events)) {
+      throw new Error("Calendar events response was empty or invalid.");
+    }
+
     return body.events;
   }, [user]);
 
@@ -1005,8 +1027,7 @@ export default function Home() {
     });
 
     if (!response.ok) {
-      const body = (await response.json()) as { error?: string };
-      throw new Error(body.error ?? "Unable to sync user profile.");
+      throw new Error(await readErrorMessage(response, "Unable to sync user profile."));
     }
 
   }, []);
@@ -1024,11 +1045,16 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const body = (await response.json()) as { error?: string };
-        throw new Error(body.error ?? "Unable to start Google Calendar connection.");
+        throw new Error(
+          await readErrorMessage(response, "Unable to start Google Calendar connection.")
+        );
       }
 
-      const body = (await response.json()) as { authUrl: string };
+      const body = await readJsonResponse<{ authUrl?: string }>(response);
+      if (!body?.authUrl) {
+        throw new Error("Google Calendar connection response was empty or invalid.");
+      }
+
       window.location.assign(body.authUrl);
     } catch (connectError) {
       setError(
@@ -1062,13 +1088,14 @@ export default function Home() {
         return;
       }
 
-      const body = (await response.json()) as { connected: boolean };
+      const body = await readJsonResponse<{ connected?: boolean }>(response);
       if (calendarSession !== calendarSessionRef.current) {
         return;
       }
 
-      setIsCalendarConnected(body.connected);
-      if (!body.connected) {
+      const isConnected = body?.connected === true;
+      setIsCalendarConnected(isConnected);
+      if (!isConnected) {
         await startCalendarConnection(currentUser);
       }
     } catch {
