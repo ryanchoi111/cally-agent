@@ -60,784 +60,43 @@ import type {
   EmailDraft,
   ScheduleOption
 } from "@/lib/types";
+import { MarkdownMessage, ResponseBlocks, stripHtml } from "@/app/home/components/agent-message";
+import { DaySchedule } from "@/app/home/components/day-schedule";
+import { EventChip } from "@/app/home/components/event-chip";
+import { EventListItem } from "@/app/home/components/event-list-item";
+import {
+  askCalendarAgent,
+  checkGoogleCalendarConnection,
+  createCalendarEvent,
+  deleteCalendarEvent,
+  editCalendarEvent,
+  fetchCalendarEvents,
+  startGoogleCalendarConnection,
+  syncUserProfile as syncUserProfileRequest
+} from "@/app/home/api/client";
+import {
+  deletionRangeLabel,
+  eventOccursOnDay,
+  gmailComposeUrl,
+  monthDays,
+  nextDateForView,
+  previousDateForView,
+  sortEvents
+} from "@/app/home/utils/calendar";
+import { useCalendarData } from "@/app/home/hooks/use-calendar-data";
 
 const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const chatStorageKey = "cally-agent-calendar-chat";
 const calendarViews: CalendarView[] = ["day", "week", "month", "year"];
-type CachedEventRange = {
-  start: number;
-  end: number;
-};
-type CalendarRange = {
-  start: string;
-  end: string;
-};
-type PendingNavigation = {
-  date: Date;
-  error?: string;
-  title: string;
-  view: CalendarView;
-};
 type PendingEmailDraft = {
   draft: EmailDraft;
   status: "pending" | "opened" | "cancelled";
 };
-type PositionedTimedEvent = {
-  column: number;
-  columnCount: number;
-  event: CalendarEvent;
-};
-const dayHours = Array.from({ length: 24 }, (_, hour) => hour);
-const hourHeight = 64;
-
-async function readJsonResponse<T>(response: Response) {
-  const text = await response.text();
-
-  if (!text.trim()) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function readErrorMessage(response: Response, fallback: string) {
-  const body = await readJsonResponse<{ error?: string }>(response);
-  return body?.error || fallback;
-}
-
-function monthDays(viewDate: Date) {
-  const start = startOfWeek(startOfMonth(viewDate));
-  const end = endOfWeek(endOfMonth(viewDate));
-  const days: Date[] = [];
-
-  for (let day = start; day <= end; day = addDays(day, 1)) {
-    days.push(day);
-  }
-
-  while (days.length < 42) {
-    days.push(addDays(days[days.length - 1], 1));
-  }
-
-  return days.slice(0, 42);
-}
-
-function yearMonths(viewDate: Date) {
-  return Array.from({ length: 12 }, (_, index) => {
-    return new Date(viewDate.getFullYear(), index, 1);
-  });
-}
-
-function calendarRangeForView(view: CalendarView, date: Date): CalendarRange {
-  if (view === "day") {
-    return {
-      start: startOfDay(date).toISOString(),
-      end: endOfDay(date).toISOString()
-    };
-  }
-
-  if (view === "week") {
-    return {
-      start: startOfWeek(date).toISOString(),
-      end: endOfWeek(date).toISOString()
-    };
-  }
-
-  if (view === "year") {
-    return {
-      start: startOfYear(date).toISOString(),
-      end: endOfYear(date).toISOString()
-    };
-  }
-
-  return {
-    start: startOfWeek(startOfMonth(date)).toISOString(),
-    end: endOfWeek(endOfMonth(date)).toISOString()
-  };
-}
-
-function calendarYearRange(date: Date): CalendarRange {
-  return {
-    start: startOfYear(date).toISOString(),
-    end: endOfYear(date).toISOString()
-  };
-}
-
-function calendarTitleForView(view: CalendarView, date: Date) {
-  if (view === "day") {
-    return format(date, "EEEE, MMMM d, yyyy");
-  }
-
-  if (view === "week") {
-    return `${format(startOfWeek(date), "MMM d")} - ${format(
-      endOfWeek(date),
-      "MMM d, yyyy"
-    )}`;
-  }
-
-  if (view === "year") {
-    return format(date, "yyyy");
-  }
-
-  return format(date, "MMMM yyyy");
-}
-
-function previousDateForView(view: CalendarView, date: Date) {
-  if (view === "day") {
-    return addDays(date, -1);
-  }
-
-  if (view === "week") {
-    return subWeeks(date, 1);
-  }
-
-  if (view === "year") {
-    return subYears(date, 1);
-  }
-
-  return subMonths(date, 1);
-}
-
-function nextDateForView(view: CalendarView, date: Date) {
-  if (view === "day") {
-    return addDays(date, 1);
-  }
-
-  if (view === "week") {
-    return addWeeks(date, 1);
-  }
-
-  if (view === "year") {
-    return addYears(date, 1);
-  }
-
-  return addMonths(date, 1);
-}
-
-function eventOccursOnDay(event: CalendarEvent, day: Date) {
-  const start = parseISO(event.start);
-  const end = parseISO(event.end);
-
-  if (event.allDay) {
-    return day >= startOfDayLocal(start) && day < startOfDayLocal(end);
-  }
-
-  return isSameDay(start, day);
-}
-
-function startOfDayLocal(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function eventTimeLabel(event: CalendarEvent) {
-  if (event.allDay) {
-    return "All day";
-  }
-
-  return format(parseISO(event.start), "h:mm a");
-}
-
-function eventRangeLabel(event: CalendarEvent) {
-  if (event.allDay) {
-    return `${format(parseISO(event.start), "MMM d")} all day`;
-  }
-
-  const start = parseISO(event.start);
-  const end = parseISO(event.end);
-
-  if (isSameDay(start, end)) {
-    return `${format(start, "MMM d, h:mm a")} - ${format(end, "h:mm a")}`;
-  }
-
-  return `${format(start, "MMM d, h:mm a")} - ${format(end, "MMM d, h:mm a")}`;
-}
-
-function deletionRangeLabel(event: CalendarEventDeletion) {
-  if (event.allDay) {
-    return `${format(parseISO(event.start), "MMM d")} all day`;
-  }
-
-  const start = parseISO(event.start);
-  const end = parseISO(event.end);
-
-  if (isSameDay(start, end)) {
-    return `${format(start, "MMM d, h:mm a")} - ${format(end, "h:mm a")}`;
-  }
-
-  return `${format(start, "MMM d, h:mm a")} - ${format(end, "MMM d, h:mm a")}`;
-}
-
-function eventDurationLabel(event: CalendarEvent) {
-  if (event.allDay) {
-    return "All-day event";
-  }
-
-  const minutes = Math.max(
-    0,
-    Math.round((parseISO(event.end).getTime() - parseISO(event.start).getTime()) / 60000)
-  );
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-
-  if (hours && remainingMinutes) {
-    return `${hours} hr ${remainingMinutes} min`;
-  }
-
-  if (hours) {
-    return `${hours} hr`;
-  }
-
-  return `${remainingMinutes} min`;
-}
-
-function minutesFromStartOfDay(date: Date) {
-  return date.getHours() * 60 + date.getMinutes();
-}
-
-function hexToRgba(hex: string, alpha: number) {
-  const normalized = hex.replace("#", "");
-
-  if (!/^[0-9a-f]{6}$/i.test(normalized)) {
-    return `rgba(86, 194, 255, ${alpha})`;
-  }
-
-  const red = parseInt(normalized.slice(0, 2), 16);
-  const green = parseInt(normalized.slice(2, 4), 16);
-  const blue = parseInt(normalized.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
-}
-
-function eventCardStyle(event: CalendarEvent) {
-  return {
-    "--event-color": event.color,
-    "--event-fill": hexToRgba(event.color, 0.13),
-    "--event-fill-strong": hexToRgba(event.color, 0.2)
-  } as React.CSSProperties;
-}
-
-function timedEventStyle(positionedEvent: PositionedTimedEvent) {
-  const { column, columnCount, event } = positionedEvent;
-  const start = parseISO(event.start);
-  const end = parseISO(event.end);
-  const startMinutes = minutesFromStartOfDay(start);
-  const durationMinutes = Math.max(
-    30,
-    Math.round((end.getTime() - start.getTime()) / 60000)
-  );
-
-  return {
-    left: `calc(10px + ((100% - 20px) / ${columnCount}) * ${column})`,
-    top: `${(startMinutes / 60) * hourHeight}px`,
-    width: `calc(((100% - 20px) / ${columnCount}) - 6px)`,
-    height: `${(durationMinutes / 60) * hourHeight}px`,
-    ...eventCardStyle(event)
-  };
-}
-
-function layoutTimedEvents(events: CalendarEvent[]): PositionedTimedEvent[] {
-  const sortedEvents = sortEvents(events);
-  const groups: CalendarEvent[][] = [];
-  let currentGroup: CalendarEvent[] = [];
-  let currentGroupEnd = 0;
-
-  sortedEvents.forEach((event) => {
-    const start = parseISO(event.start).getTime();
-    const end = parseISO(event.end).getTime();
-
-    if (!currentGroup.length || start < currentGroupEnd) {
-      currentGroup.push(event);
-      currentGroupEnd = Math.max(currentGroupEnd, end);
-      return;
-    }
-
-    groups.push(currentGroup);
-    currentGroup = [event];
-    currentGroupEnd = end;
-  });
-
-  if (currentGroup.length) {
-    groups.push(currentGroup);
-  }
-
-  return groups.flatMap((group) => {
-    const columnEnds: number[] = [];
-    const positioned = group.map((event) => {
-      const start = parseISO(event.start).getTime();
-      const end = parseISO(event.end).getTime();
-      const reusableColumn = columnEnds.findIndex((columnEnd) => columnEnd <= start);
-      const column = reusableColumn === -1 ? columnEnds.length : reusableColumn;
-
-      columnEnds[column] = end;
-
-      return {
-        column,
-        columnCount: 1,
-        event
-      };
-    });
-    const columnCount = Math.max(1, columnEnds.length);
-
-    return positioned.map((positionedEvent) => ({
-      ...positionedEvent,
-      columnCount
-    }));
-  });
-}
-
-function gmailComposeUrl(draft: EmailDraft) {
-  const params = new URLSearchParams({
-    view: "cm",
-    fs: "1",
-    su: draft.subject,
-    body: draft.body
-  });
-
-  if (draft.to.length) {
-    params.set("to", draft.to.join(","));
-  }
-
-  if (draft.cc?.length) {
-    params.set("cc", draft.cc.join(","));
-  }
-
-  if (draft.bcc?.length) {
-    params.set("bcc", draft.bcc.join(","));
-  }
-
-  return `https://mail.google.com/mail/?${params.toString()}`;
-}
-
-function sortEvents(events: CalendarEvent[]) {
-  return [...events].sort((a, b) => {
-    return new Date(a.start).getTime() - new Date(b.start).getTime();
-  });
-}
-
-function eventIntersectsRange(event: CalendarEvent, rangeStart: number, rangeEnd: number) {
-  const eventStart = parseISO(event.start).getTime();
-  const eventEnd = parseISO(event.end).getTime();
-
-  return eventStart < rangeEnd && eventEnd > rangeStart;
-}
-
-function filterEventsForRange(
-  sourceEvents: CalendarEvent[],
-  rangeStart: string,
-  rangeEnd: string
-) {
-  const start = new Date(rangeStart).getTime();
-  const end = new Date(rangeEnd).getTime();
-
-  return sortEvents(
-    sourceEvents.filter((event) => eventIntersectsRange(event, start, end))
-  );
-}
-
-function stripHtml(value: string) {
-  return value
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .trim();
-}
-
-function renderInlineMarkdown(text: string) {
-  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
-    }
-
-    return part;
-  });
-}
-
-function MarkdownMessage({ content }: { content: string }) {
-  const blocks = content.trim().split(/\n\s*\n/g);
-
-  return (
-    <div className="markdown-message">
-      {blocks.map((block, blockIndex) => {
-        const lines = block.split("\n").filter((line) => line.trim());
-        const isUnorderedList = lines.every((line) => /^[-*]\s+/.test(line.trim()));
-        const isNumberedList = lines.every((line) => /^\d+\.\s+/.test(line.trim()));
-
-        if (isUnorderedList) {
-          return (
-            <ul key={blockIndex}>
-              {lines.map((line, lineIndex) => (
-                <li key={lineIndex}>
-                  {renderInlineMarkdown(line.trim().replace(/^[-*]\s+/, ""))}
-                </li>
-              ))}
-            </ul>
-          );
-        }
-
-        if (isNumberedList) {
-          return (
-            <ol key={blockIndex}>
-              {lines.map((line, lineIndex) => (
-                <li key={lineIndex}>
-                  {renderInlineMarkdown(line.trim().replace(/^\d+\.\s+/, ""))}
-                </li>
-              ))}
-            </ol>
-          );
-        }
-
-        if (lines.length === 1 && /^#{1,3}\s+/.test(lines[0].trim())) {
-          return (
-            <div className="markdown-heading" key={blockIndex}>
-              {renderInlineMarkdown(lines[0].trim().replace(/^#{1,3}\s+/, ""))}
-            </div>
-          );
-        }
-
-        return (
-          <p key={blockIndex}>
-            {lines.map((line, lineIndex) => (
-              <span key={lineIndex}>
-                {renderInlineMarkdown(line)}
-                {lineIndex < lines.length - 1 ? <br /> : null}
-              </span>
-            ))}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
-function ResponseBlocks({ blocks }: { blocks: AgentResponseBlock[] }) {
-  if (!blocks.length) {
-    return null;
-  }
-
-  return (
-    <div className="response-blocks">
-      {blocks.map((block, index) => {
-        if (block.type === "summary") {
-          return (
-            <section className="response-block" key={`${block.type}-${index}`}>
-              <div className="response-block-kicker">Summary</div>
-              <div className="response-block-title">{block.title}</div>
-              <p>{block.body}</p>
-            </section>
-          );
-        }
-
-        if (block.type === "recommendation_group" || block.type === "action_checklist") {
-          return (
-            <section className="response-block" key={`${block.type}-${index}`}>
-              <div className="response-block-kicker">
-                {block.type === "action_checklist" ? "Next steps" : "Recommendations"}
-              </div>
-              <div className="response-block-title">{block.title}</div>
-              <ul>
-                {block.items.map((item, itemIndex) => (
-                  <li key={itemIndex}>{item}</li>
-                ))}
-              </ul>
-            </section>
-          );
-        }
-
-        if (block.type === "meeting_plan") {
-          return (
-            <section className="response-block" key={`${block.type}-${index}`}>
-              <div className="response-block-kicker">Meeting plan</div>
-              <div className="response-block-title">{block.title}</div>
-              <div className="meeting-plan-grid">
-                {block.groups.map((group, groupIndex) => (
-                  <div className="meeting-plan-item" key={groupIndex}>
-                    <div className="meeting-plan-label">{group.label}</div>
-                    <div className="meeting-plan-recommendation">{group.recommendation}</div>
-                    <div className="meeting-plan-rationale">{group.rationale}</div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          );
-        }
-
-        return (
-          <section className="response-block" key={`${block.type}-${index}`}>
-            <div className="response-block-kicker">Draft</div>
-            <div className="response-block-title">{block.title}</div>
-            <div className="response-block-audience">{block.audience}</div>
-            <p className="response-block-draft">{block.body}</p>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function EventChip({
-  event,
-  isActive,
-  boundaryRef,
-  onActivate,
-  onDeactivate
-}: {
-  event: CalendarEvent;
-  isActive: boolean;
-  boundaryRef: React.RefObject<HTMLElement | null>;
-  onActivate: () => void;
-  onDeactivate: () => void;
-}) {
-  const attendees = event.attendees ?? [];
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
-  const hasExtraDetails = Boolean(
-    event.description ||
-      event.location ||
-      attendees.length ||
-      event.creator ||
-      event.organizer ||
-      event.htmlLink
-  );
-
-  useLayoutEffect(() => {
-    if (!isActive) {
-      return;
-    }
-
-    function updatePopoverPosition() {
-      const chipElement = chipRef.current;
-      const popoverElement = popoverRef.current;
-
-      if (!chipElement || !popoverElement) {
-        return;
-      }
-
-      const chipRect = chipElement.getBoundingClientRect();
-      const popoverRect = popoverElement.getBoundingClientRect();
-      const boundaryRect =
-        boundaryRef.current?.getBoundingClientRect() ??
-        new DOMRect(0, 0, window.innerWidth, window.innerHeight);
-      const boundaryPadding = 12;
-      const popoverGap = 8;
-      const maxPopoverWidth = Math.max(220, boundaryRect.width - boundaryPadding * 2);
-      const popoverWidth = Math.min(popoverRect.width, maxPopoverWidth);
-
-      let left = chipRect.left;
-      let top = chipRect.bottom + popoverGap;
-
-      if (left + popoverWidth > boundaryRect.right - boundaryPadding) {
-        left = chipRect.right - popoverWidth;
-      }
-      if (left < boundaryRect.left + boundaryPadding) {
-        left = boundaryRect.left + boundaryPadding;
-      }
-
-      if (top + popoverRect.height > boundaryRect.bottom - boundaryPadding) {
-        top = chipRect.top - popoverRect.height - popoverGap;
-      }
-      if (top < boundaryRect.top + boundaryPadding) {
-        top = boundaryRect.top + boundaryPadding;
-      }
-
-      setPopoverStyle({
-        left: `${left}px`,
-        top: `${top}px`,
-        maxHeight: `${Math.max(160, boundaryRect.height - boundaryPadding * 2)}px`,
-        position: "fixed",
-        width: `${popoverWidth}px`
-      });
-    }
-
-    updatePopoverPosition();
-    window.addEventListener("resize", updatePopoverPosition);
-    window.addEventListener("scroll", updatePopoverPosition, true);
-
-    return () => {
-      window.removeEventListener("resize", updatePopoverPosition);
-      window.removeEventListener("scroll", updatePopoverPosition, true);
-    };
-  }, [boundaryRef, isActive]);
-
-  return (
-    <div
-      className={`event-popover-anchor ${isActive ? "is-active" : ""}`}
-      onMouseEnter={onActivate}
-      onMouseLeave={onDeactivate}
-    >
-      <button
-        className={`event-chip ${event.allDay ? "" : "timed"}`}
-        onClick={onActivate}
-        onFocus={onActivate}
-        ref={chipRef}
-        style={eventCardStyle(event)}
-        type="button"
-      >
-        {event.allDay ? event.title : `${eventTimeLabel(event)} ${event.title}`}
-      </button>
-      <div className="event-popover" ref={popoverRef} role="tooltip" style={popoverStyle}>
-        <div className="event-popover-title">{event.title}</div>
-        <div className="event-popover-row">
-          <Clock size={14} />
-          <span>
-            {eventRangeLabel(event)}
-            <span className="event-popover-muted"> ({eventDurationLabel(event)})</span>
-          </span>
-        </div>
-        <div className="event-popover-row">
-          <CalendarDays size={14} />
-          <span>{event.calendarName}</span>
-        </div>
-        {event.location ? (
-          <div className="event-popover-row">
-            <MapPin size={14} />
-            <span>{event.location}</span>
-          </div>
-        ) : null}
-        {event.description ? (
-          <div className="event-popover-row event-popover-notes">
-            <FileText size={14} />
-            <span>{stripHtml(event.description)}</span>
-          </div>
-        ) : null}
-        {attendees.length ? (
-          <div className="event-popover-row event-popover-notes">
-            <Users size={14} />
-            <span>
-              {attendees
-                .map((attendee) => attendee.name ?? attendee.email)
-                .slice(0, 6)
-                .join(", ")}
-              {attendees.length > 6 ? `, +${attendees.length - 6} more` : ""}
-            </span>
-          </div>
-        ) : null}
-        {event.organizer ? (
-          <div className="event-popover-meta">Organizer: {event.organizer}</div>
-        ) : null}
-        {event.creator && event.creator !== event.organizer ? (
-          <div className="event-popover-meta">Created by: {event.creator}</div>
-        ) : null}
-        {event.htmlLink ? (
-          <a
-            className="event-popover-link"
-            href={event.htmlLink}
-            rel="noreferrer"
-            target="_blank"
-          >
-            <ExternalLink size={13} />
-            Open in Google Calendar
-          </a>
-        ) : null}
-        {!hasExtraDetails ? (
-          <div className="event-popover-meta">No notes, location, or guests.</div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function EventListItem({ event }: { event: CalendarEvent }) {
-  const start = parseISO(event.start);
-  const end = parseISO(event.end);
-
-  return (
-    <div className="event-list-item" style={eventCardStyle(event)}>
-      <span className="color-dot" style={{ backgroundColor: event.color }} />
-      <div>
-        <div className="event-list-title">{event.title}</div>
-        <div className="event-list-meta">
-          <span>
-            <strong>Date</strong>
-            {format(start, "MMM d, yyyy")}
-          </span>
-          {!event.allDay ? (
-            <span>
-              <strong>Time</strong>
-              {`${format(start, "h:mm a")} - ${format(end, "h:mm a")}`}
-            </span>
-          ) : null}
-          <span>
-            <strong>Calendar</strong>
-            {event.calendarName}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DaySchedule({ date, events }: { date: Date; events: CalendarEvent[] }) {
-  const dayEvents = events.filter((calendarEvent) => eventOccursOnDay(calendarEvent, date));
-  const allDayEvents = dayEvents.filter((event) => event.allDay);
-  const timedEvents = dayEvents.filter((event) => !event.allDay);
-  const positionedTimedEvents = layoutTimedEvents(timedEvents);
-
-  return (
-    <div className="day-schedule">
-      <div className="day-schedule-header">
-        <div>
-          <div className="agenda-day-name">{format(date, "EEEE")}</div>
-          <div className="agenda-day-date">{format(date, "MMMM d, yyyy")}</div>
-        </div>
-        <div className="agenda-count">{dayEvents.length}</div>
-      </div>
-
-      {allDayEvents.length ? (
-        <div className="all-day-row">
-          <div className="time-label">All day</div>
-          <div className="all-day-events">
-            {allDayEvents.map((event) => (
-              <EventListItem event={event} key={event.id} />
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="time-grid">
-        <div className="time-labels">
-          {dayHours.map((hour) => (
-            <div className="time-label-slot" key={hour}>
-              {format(new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour), "ha")}
-            </div>
-          ))}
-        </div>
-        <div className="time-lanes">
-          {dayHours.map((hour) => (
-            <div className="time-row" key={hour} />
-          ))}
-          {positionedTimedEvents.map((positionedEvent) => (
-            <div
-              className="timed-event-card"
-              key={positionedEvent.event.id}
-              style={timedEventStyle(positionedEvent)}
-            >
-              <div className="timed-event-title">{positionedEvent.event.title}</div>
-              <div className="timed-event-time">
-                {eventTimeLabel(positionedEvent.event)} · {eventDurationLabel(positionedEvent.event)}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [hasSyncedUserProfile, setHasSyncedUserProfile] = useState(false);
   const [isCalendarConnected, setIsCalendarConnected] = useState(false);
-  const [viewDate, setViewDate] = useState(() => new Date());
-  const [calendarView, setCalendarView] = useState<CalendarView>("month");
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [agentCalendarContext, setAgentCalendarContext] = useState<CalendarEvent[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingEvents, setPendingEvents] = useState<CalendarEventDraft[]>([]);
   const [pendingScheduleOptions, setPendingScheduleOptions] = useState<ScheduleOption[]>([]);
@@ -852,9 +111,6 @@ export default function Home() {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
   const [isCheckingCalendarConnection, setIsCheckingCalendarConnection] = useState(false);
-  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
-  const [hasLoadedInitialEvents, setHasLoadedInitialEvents] = useState(false);
-  const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null);
   const [isAskingAgent, setIsAskingAgent] = useState(false);
   const [isStreamingAgent, setIsStreamingAgent] = useState(false);
   const [isCreatingEvent, setIsCreatingEvent] = useState(false);
@@ -863,118 +119,38 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const calendarPaneRef = useRef<HTMLElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const eventCacheRef = useRef<Map<string, CalendarEvent>>(new Map());
-  const cachedRangesRef = useRef<CachedEventRange[]>([]);
   const calendarSessionRef = useRef(0);
-
-  const clearCalendarData = useCallback(() => {
+  const {
+    agentCalendarContext,
+    calendarView,
+    clearCalendarData,
+    events,
+    getAgentCalendarContext,
+    hasLoadedInitialEvents,
+    isLoadingEvents,
+    loadEvents,
+    months,
+    navigateToRange,
+    pendingNavigation,
+    removeCachedEvent,
+    setCalendarView,
+    setEvents,
+    setHasLoadedInitialEvents,
+    setPendingNavigation,
+    upsertCachedEvent,
+    viewDate,
+    viewRange,
+    viewTitle,
+    visibleDays
+  } = useCalendarData({
+    user,
+    isCalendarConnected,
+    onError: setError
+  });
+  const resetCalendarData = useCallback(() => {
     calendarSessionRef.current += 1;
-    setEvents([]);
-    setAgentCalendarContext([]);
-    setHasLoadedInitialEvents(false);
-    setIsLoadingEvents(false);
-    setIsCheckingCalendarConnection(false);
-    setPendingNavigation(null);
-    eventCacheRef.current.clear();
-    cachedRangesRef.current = [];
-  }, []);
-
-  const updateAgentCalendarContext = useCallback(() => {
-    setAgentCalendarContext(sortEvents(Array.from(eventCacheRef.current.values())));
-  }, []);
-
-  const getAgentCalendarContext = useCallback(() => {
-    return sortEvents(Array.from(eventCacheRef.current.values()));
-  }, []);
-
-  const days = useMemo(() => monthDays(viewDate), [viewDate]);
-  const visibleDays = useMemo(() => {
-    if (calendarView === "day") {
-      return [viewDate];
-    }
-
-    if (calendarView === "week") {
-      const weekStart = startOfWeek(viewDate);
-      return Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
-    }
-
-    return days;
-  }, [calendarView, days, viewDate]);
-  const months = useMemo(() => yearMonths(viewDate), [viewDate]);
-  const viewRange = useMemo(
-    () => calendarRangeForView(calendarView, viewDate),
-    [calendarView, viewDate]
-  );
-  const viewTitle = useMemo(
-    () => calendarTitleForView(calendarView, viewDate),
-    [calendarView, viewDate]
-  );
-
-  const getCachedEventsForRange = useCallback((rangeStart: string, rangeEnd: string) => {
-    const start = new Date(rangeStart).getTime();
-    const end = new Date(rangeEnd).getTime();
-    const hasCoveringRange = cachedRangesRef.current.some((range) => {
-      return range.start <= start && range.end >= end;
-    });
-
-    if (!hasCoveringRange) {
-      return null;
-    }
-
-    return filterEventsForRange(
-      Array.from(eventCacheRef.current.values()),
-      rangeStart,
-      rangeEnd
-    );
-  }, []);
-
-  const cacheEventsForRange = useCallback((range: CalendarRange, rangeEvents: CalendarEvent[]) => {
-    const rangeStart = new Date(range.start).getTime();
-    const rangeEnd = new Date(range.end).getTime();
-
-    Array.from(eventCacheRef.current.values()).forEach((event) => {
-      if (eventIntersectsRange(event, rangeStart, rangeEnd)) {
-        eventCacheRef.current.delete(event.id);
-      }
-    });
-
-    rangeEvents.forEach((event) => {
-      eventCacheRef.current.set(event.id, event);
-    });
-
-    cachedRangesRef.current.push({
-      start: rangeStart,
-      end: rangeEnd
-    });
-  }, []);
-
-  const fetchEventsForRange = useCallback(async (range: CalendarRange) => {
-    if (!user) {
-      return [];
-    }
-
-    const idToken = await user.getIdToken();
-    const response = await fetch("/api/calendar/events", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        idToken,
-        timeMin: range.start,
-        timeMax: range.end
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(await readErrorMessage(response, "Unable to load calendar events."));
-    }
-
-    const body = await readJsonResponse<{ events?: CalendarEvent[] }>(response);
-    if (!body || !Array.isArray(body.events)) {
-      throw new Error("Calendar events response was empty or invalid.");
-    }
-
-    return body.events;
-  }, [user]);
+    clearCalendarData();
+  }, [clearCalendarData]);
 
   function handleResizeChat(event: React.PointerEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -1016,20 +192,11 @@ export default function Home() {
 
   const syncUserProfile = useCallback(async (currentUser: User) => {
     const idToken = await currentUser.getIdToken();
-    const response = await fetch("/api/users/me", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        idToken,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        locale: navigator.language
-      })
+    await syncUserProfileRequest({
+      idToken,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      locale: navigator.language
     });
-
-    if (!response.ok) {
-      throw new Error(await readErrorMessage(response, "Unable to sync user profile."));
-    }
-
   }, []);
 
   const startCalendarConnection = useCallback(async (currentUser: User) => {
@@ -1038,24 +205,8 @@ export default function Home() {
 
     try {
       const idToken = await currentUser.getIdToken();
-      const response = await fetch("/api/google/oauth/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken })
-      });
-
-      if (!response.ok) {
-        throw new Error(
-          await readErrorMessage(response, "Unable to start Google Calendar connection.")
-        );
-      }
-
-      const body = await readJsonResponse<{ authUrl?: string }>(response);
-      if (!body?.authUrl) {
-        throw new Error("Google Calendar connection response was empty or invalid.");
-      }
-
-      window.location.assign(body.authUrl);
+      const authUrl = await startGoogleCalendarConnection(idToken);
+      window.location.assign(authUrl);
     } catch (connectError) {
       setError(
         connectError instanceof Error
@@ -1075,25 +226,10 @@ export default function Home() {
     const calendarSession = calendarSessionRef.current;
     try {
       const idToken = await currentUser.getIdToken();
-      const response = await fetch("/api/google/oauth/status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken })
-      });
-
-      if (!response.ok) {
-        if (calendarSession === calendarSessionRef.current) {
-          setIsCalendarConnected(false);
-        }
-        return;
-      }
-
-      const body = await readJsonResponse<{ connected?: boolean }>(response);
+      const isConnected = await checkGoogleCalendarConnection(idToken);
       if (calendarSession !== calendarSessionRef.current) {
         return;
       }
-
-      const isConnected = body?.connected === true;
       setIsCalendarConnected(isConnected);
       if (!isConnected) {
         await startCalendarConnection(currentUser);
@@ -1115,7 +251,7 @@ export default function Home() {
         setUser(currentUser);
         setHasSyncedUserProfile(false);
         setIsCalendarConnected(false);
-        clearCalendarData();
+        resetCalendarData();
         const calendarSession = calendarSessionRef.current;
         if (!currentUser) {
           setPendingScheduleOptions([]);
@@ -1161,7 +297,7 @@ export default function Home() {
       );
       return undefined;
     }
-  }, [checkCalendarConnection, clearCalendarData, syncUserProfile]);
+  }, [checkCalendarConnection, resetCalendarData, syncUserProfile]);
 
   useEffect(() => {
     const stored = sessionStorage.getItem(chatStorageKey);
@@ -1203,7 +339,7 @@ export default function Home() {
       const result = await signInWithPopup(getFirebaseAuth(), createCalendarProvider());
       setUser(result.user);
       setHasSyncedUserProfile(false);
-      clearCalendarData();
+      resetCalendarData();
       setPendingEvents([]);
       setPendingScheduleOptions([]);
       setPendingDeletions([]);
@@ -1231,7 +367,7 @@ export default function Home() {
     setPendingEmails([]);
     setIsCalendarConnected(false);
     setHasSyncedUserProfile(false);
-    clearCalendarData();
+    resetCalendarData();
     sessionStorage.removeItem(chatStorageKey);
   }
 
@@ -1242,96 +378,6 @@ export default function Home() {
 
     await startCalendarConnection(user);
   }
-
-  const loadEvents = useCallback(async (options: {
-    force?: boolean;
-    targetDate: Date;
-    targetView: CalendarView;
-  }) => {
-    if (!user || !isCalendarConnected) {
-      return;
-    }
-
-    const targetView = options.targetView;
-    const targetDate = options.targetDate;
-    const targetRange = calendarRangeForView(targetView, targetDate);
-    const loadRange = calendarYearRange(targetDate);
-    const targetTitle = calendarTitleForView(targetView, targetDate);
-    const cachedYearEvents = getCachedEventsForRange(loadRange.start, loadRange.end);
-    const calendarSession = calendarSessionRef.current;
-
-    if (cachedYearEvents && !options?.force) {
-      setViewDate(targetDate);
-      setCalendarView(targetView);
-      setEvents(
-        getCachedEventsForRange(targetRange.start, targetRange.end) ??
-          filterEventsForRange(cachedYearEvents, targetRange.start, targetRange.end)
-      );
-      setPendingNavigation(null);
-      setHasLoadedInitialEvents(true);
-      updateAgentCalendarContext();
-      return;
-    }
-
-    const nextPendingNavigation: PendingNavigation = {
-      date: targetDate,
-      title: targetTitle,
-      view: targetView
-    };
-
-    setPendingNavigation(nextPendingNavigation);
-    setIsLoadingEvents(true);
-    setError(null);
-
-    try {
-      const loadedEvents = await fetchEventsForRange(loadRange);
-      if (calendarSession !== calendarSessionRef.current) {
-        return;
-      }
-
-      cacheEventsForRange(loadRange, loadedEvents);
-      updateAgentCalendarContext();
-      setViewDate(targetDate);
-      setCalendarView(targetView);
-      setEvents(
-        getCachedEventsForRange(targetRange.start, targetRange.end) ??
-          filterEventsForRange(loadedEvents, targetRange.start, targetRange.end)
-      );
-      setHasLoadedInitialEvents(true);
-      setPendingNavigation(null);
-    } catch (loadError) {
-      if (calendarSession !== calendarSessionRef.current) {
-        return;
-      }
-
-      const message =
-        loadError instanceof Error ? loadError.message : "Unable to load events.";
-      setError(message);
-      setPendingNavigation({
-        ...nextPendingNavigation,
-        error: message
-      });
-    } finally {
-      if (calendarSession === calendarSessionRef.current) {
-        setIsLoadingEvents(false);
-      }
-    }
-  }, [
-    cacheEventsForRange,
-    fetchEventsForRange,
-    getCachedEventsForRange,
-    isCalendarConnected,
-    updateAgentCalendarContext,
-    user
-  ]);
-
-  const navigateToRange = useCallback((targetView: CalendarView, targetDate: Date) => {
-    if (isLoadingEvents || pendingNavigation) {
-      return;
-    }
-
-    void loadEvents({ targetDate, targetView });
-  }, [isLoadingEvents, loadEvents, pendingNavigation]);
 
   useEffect(() => {
     if (!isCalendarConnected || hasLoadedInitialEvents) {
@@ -1439,40 +485,29 @@ export default function Home() {
       }
 
       const currentAgentContext = getAgentCalendarContext();
-      const response = await fetch("/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          idToken,
-          messages: nextMessages,
-          calendarContext: currentAgentContext.length
-            ? currentAgentContext
-            : agentCalendarContext,
-          clientContext: {
-            calendarView,
-            localDate: format(new Date(), "yyyy-MM-dd"),
-            localDateTime: new Date().toString(),
-            localWeekday: format(new Date(), "EEEE"),
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            viewDate: format(viewDate, "yyyy-MM-dd"),
-            visibleRange: viewRange
-          },
-          conversationState: {
-            scheduleOptions: pendingScheduleOptions,
-            pendingEvents,
-            pendingDeletions,
-            pendingEdits,
-            pendingEmailDraftCount: activeEmailDrafts.length
-          }
-        })
+      const body = await askCalendarAgent({
+        idToken,
+        messages: nextMessages,
+        calendarContext: currentAgentContext.length
+          ? currentAgentContext
+          : agentCalendarContext,
+        clientContext: {
+          calendarView,
+          localDate: format(new Date(), "yyyy-MM-dd"),
+          localDateTime: new Date().toString(),
+          localWeekday: format(new Date(), "EEEE"),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          viewDate: format(viewDate, "yyyy-MM-dd"),
+          visibleRange: viewRange
+        },
+        conversationState: {
+          scheduleOptions: pendingScheduleOptions,
+          pendingEvents,
+          pendingDeletions,
+          pendingEdits,
+          pendingEmailDraftCount: activeEmailDrafts.length
+        }
       });
-
-      if (!response.ok) {
-        const body = (await response.json()) as { error?: string };
-        throw new Error(body.error ?? "Unable to contact the calendar agent.");
-      }
-
-      const body = (await response.json()) as AgentChatResponse;
       if (body.confirmedPendingAction) {
         if (body.confirmedPendingAction === "create_events") {
           await handleCreateEvent();
@@ -1540,25 +575,10 @@ export default function Home() {
       const createdEvents: CalendarEvent[] = [];
 
       for (const eventDraft of pendingEvents) {
-        const response = await fetch("/api/calendar/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            idToken,
-            event: eventDraft
-          })
-        });
-
-        if (!response.ok) {
-          const body = (await response.json()) as { error?: string };
-          throw new Error(body.error ?? "Unable to create calendar event.");
-        }
-
-        const body = (await response.json()) as { event: CalendarEvent };
-        createdEvents.push(body.event);
-        eventCacheRef.current.set(body.event.id, body.event);
+        const event = await createCalendarEvent({ idToken, event: eventDraft });
+        createdEvents.push(event);
+        upsertCachedEvent(event);
       }
-      updateAgentCalendarContext();
 
       setEvents((currentEvents) =>
         [...currentEvents, ...createdEvents].sort(
@@ -1600,25 +620,14 @@ export default function Home() {
       const deletedIds: string[] = [];
 
       for (const pendingDeletion of pendingDeletions) {
-        const response = await fetch("/api/calendar/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            idToken,
-            eventId: pendingDeletion.id
-          })
+        await deleteCalendarEvent({
+          idToken,
+          eventId: pendingDeletion.id
         });
-
-        if (!response.ok) {
-          const body = (await response.json()) as { error?: string };
-          throw new Error(body.error ?? "Unable to delete calendar event.");
-        }
-
         deletedIds.push(pendingDeletion.id);
-        eventCacheRef.current.delete(pendingDeletion.id);
+        removeCachedEvent(pendingDeletion.id);
       }
 
-      updateAgentCalendarContext();
       setEvents((currentEvents) =>
         currentEvents.filter((calendarEvent) => !deletedIds.includes(calendarEvent.id))
       );
@@ -1656,27 +665,15 @@ export default function Home() {
       const editedEvents: CalendarEvent[] = [];
 
       for (const pendingEdit of pendingEdits) {
-        const response = await fetch("/api/calendar/edit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            idToken,
-            eventId: pendingEdit.id,
-            updates: pendingEdit.updates
-          })
+        const event = await editCalendarEvent({
+          idToken,
+          eventId: pendingEdit.id,
+          updates: pendingEdit.updates
         });
-
-        if (!response.ok) {
-          const body = (await response.json()) as { error?: string };
-          throw new Error(body.error ?? "Unable to edit calendar event.");
-        }
-
-        const body = (await response.json()) as { event: CalendarEvent };
-        editedEvents.push(body.event);
-        eventCacheRef.current.set(body.event.id, body.event);
+        editedEvents.push(event);
+        upsertCachedEvent(event);
       }
 
-      updateAgentCalendarContext();
       setEvents((currentEvents) => {
         const editedById = new Map(editedEvents.map((calendarEvent) => [calendarEvent.id, calendarEvent]));
         return currentEvents
@@ -1746,6 +743,7 @@ export default function Home() {
       ])
     ).values()
   );
+  const days = monthDays(viewDate);
   const isCalendarNavigationBlocked = isLoadingEvents || Boolean(pendingNavigation);
   const showCalendarBootScreen =
     Boolean(user) &&

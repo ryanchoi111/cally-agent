@@ -18,8 +18,6 @@ type StoredGoogleToken = {
 };
 
 const tokenCollection = "googleCalendarTokens";
-const firestoreNotFoundMessage =
-  "Firestore database was not found. Create a Cloud Firestore database in this Firebase project and make sure FIREBASE_SERVICE_ACCOUNT_JSON points to the same project.";
 
 function isFirestoreNotFound(error: unknown) {
   return (
@@ -32,7 +30,7 @@ function isFirestoreNotFound(error: unknown) {
 
 function normalizeFirestoreError(error: unknown): never {
   if (isFirestoreNotFound(error)) {
-    throw new Error(firestoreNotFoundMessage);
+    throw new Error('Firestore database was not found. Create a Cloud Firestore database in this Firebase project and make sure FIREBASE_SERVICE_ACCOUNT_JSON points to the same project.');
   }
 
   throw error;
