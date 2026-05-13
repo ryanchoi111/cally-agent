@@ -4,6 +4,7 @@ import {
   checkRateLimit,
   clientIp,
   isNonEmptyString,
+  logApiError,
   readJsonBody
 } from "@/lib/api-security";
 import { verifyFirebaseIdToken } from "@/lib/firebase-admin";
@@ -50,37 +51,45 @@ export async function POST(request: Request) {
     );
   }
 
-  const decoded = await verifyFirebaseIdToken(body.idToken);
-  const limitResponse = checkRateLimit({
-    key: `calendar-delete:${decoded.uid}:${clientIp(request)}`,
-    limit: 30,
-    windowMs: 60_000
-  });
-  if (limitResponse) {
-    return limitResponse;
-  }
-
-  const accessToken = await getGoogleAccessToken(decoded.uid);
-  const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-      parsed.calendarId
-    )}/events/${encodeURIComponent(parsed.eventId)}`,
-    {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
+  try {
+    const decoded = await verifyFirebaseIdToken(body.idToken);
+    const limitResponse = checkRateLimit({
+      key: `calendar-delete:${decoded.uid}:${clientIp(request)}`,
+      limit: 30,
+      windowMs: 60_000
+    });
+    if (limitResponse) {
+      return limitResponse;
     }
-  );
 
-  if (!response.ok && response.status !== 410) {
-    const errorText = await response.text();
-    console.error("Google Calendar delete failed:", errorText);
+    const accessToken = await getGoogleAccessToken(decoded.uid);
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+        parsed.calendarId
+      )}/events/${encodeURIComponent(parsed.eventId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      }
+    );
+
+    if (!response.ok && response.status !== 410) {
+      const errorText = await response.text();
+      console.error("Google Calendar delete failed:", errorText);
+      return NextResponse.json(
+        { error: "Unable to delete Google Calendar event" },
+        { status: response.status }
+      );
+    }
+
+    return NextResponse.json({ deletedEventId: body.eventId });
+  } catch (error) {
+    logApiError("Calendar event delete failed:", error);
     return NextResponse.json(
       { error: "Unable to delete Google Calendar event" },
-      { status: response.status }
+      { status: 502 }
     );
   }
-
-  return NextResponse.json({ deletedEventId: body.eventId });
 }

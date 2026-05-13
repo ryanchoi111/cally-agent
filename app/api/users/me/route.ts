@@ -5,6 +5,7 @@ import {
   clientIp,
   isNonEmptyString,
   isOptionalString,
+  logApiError,
   readJsonBody
 } from "@/lib/api-security";
 import { verifyFirebaseIdToken } from "@/lib/firebase-admin";
@@ -59,11 +60,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ user: profile });
   } catch (error) {
+    logApiError("User profile update failed:", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Unable to update user profile"
-      },
+      { error: "Unable to update user profile" },
       { status: 500 }
     );
   }

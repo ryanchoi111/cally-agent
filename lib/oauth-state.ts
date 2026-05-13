@@ -51,16 +51,25 @@ export function verifyOAuthState(state: string) {
     .update(encodedPayload)
     .digest("base64url");
 
+  const signatureBuffer = Buffer.from(signature);
+  const expectedSignatureBuffer = Buffer.from(expectedSignature);
+
   if (
-    !crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
-    )
+    signatureBuffer.length !== expectedSignatureBuffer.length ||
+    !crypto.timingSafeEqual(signatureBuffer, expectedSignatureBuffer)
   ) {
     throw new Error("OAuth state signature is invalid");
   }
 
   const payload = JSON.parse(base64UrlDecode(encodedPayload)) as OAuthState;
+
+  if (
+    typeof payload.uid !== "string" ||
+    !payload.uid ||
+    typeof payload.exp !== "number"
+  ) {
+    throw new Error("OAuth state payload is invalid");
+  }
 
   if (payload.exp < Date.now()) {
     throw new Error("OAuth state has expired");

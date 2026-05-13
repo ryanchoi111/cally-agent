@@ -81,6 +81,14 @@ export function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
+export function logApiError(context: string, error: unknown) {
+  console.error(context, error);
+}
+
+export function serverError(message: string, status = 500) {
+  return NextResponse.json({ error: message }, { status });
+}
+
 export function isNonEmptyString(value: unknown, maxLength = 2_000): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= maxLength;
 }

@@ -5,13 +5,15 @@ const completionCreate = vi.hoisted(() => vi.fn());
 const verifyFirebaseIdToken = vi.hoisted(() => vi.fn());
 
 vi.mock("openai", () => ({
-  default: vi.fn(() => ({
-    chat: {
-      completions: {
-        create: completionCreate
+  default: vi.fn(function OpenAI() {
+    return {
+      chat: {
+        completions: {
+          create: completionCreate
+        }
       }
-    }
-  }))
+    };
+  })
 }));
 
 vi.mock("@/lib/firebase-admin", () => ({

@@ -4,6 +4,7 @@ import {
   checkRateLimit,
   clientIp,
   isNonEmptyString,
+  logApiError,
   readJsonBody
 } from "@/lib/api-security";
 import { verifyFirebaseIdToken } from "@/lib/firebase-admin";
@@ -49,13 +50,9 @@ export async function POST(request: Request) {
       connected
     });
   } catch (error) {
+    logApiError("Google OAuth status failed:", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to read Google Calendar connection status"
-      },
+      { error: "Unable to read Google Calendar connection status" },
       { status: 500 }
     );
   }

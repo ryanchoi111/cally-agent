@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cally Calendar Agent",
-  description: "Read-only Google Calendar agent with Firebase authentication"
+  title: "Cally.ai",
+  description: "Google Calendar assistant that optimizes your schedule using AI."
 };
 
 export default function RootLayout({

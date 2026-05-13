@@ -6,6 +6,7 @@ import {
   clientIp,
   isIsoLikeDateTime,
   isNonEmptyString,
+  logApiError,
   isOptionalString,
   isStringArray,
   readJsonBody
@@ -154,69 +155,77 @@ export async function POST(request: Request) {
     );
   }
 
-  const decoded = await verifyFirebaseIdToken(body.idToken);
-  const limitResponse = checkRateLimit({
-    key: `calendar-edit:${decoded.uid}:${clientIp(request)}`,
-    limit: 30,
-    windowMs: 60_000
-  });
-  if (limitResponse) {
-    return limitResponse;
-  }
-
-  const accessToken = await getGoogleAccessToken(decoded.uid);
-  const patchBody: Record<string, unknown> = {};
-
-  if (body.updates.title !== undefined) {
-    patchBody.summary = body.updates.title;
-  }
-
-  if (body.updates.description !== undefined) {
-    patchBody.description = body.updates.description || null;
-  }
-
-  if (body.updates.location !== undefined) {
-    patchBody.location = body.updates.location || null;
-  }
-
-  if (body.updates.attendees !== undefined) {
-    patchBody.attendees = body.updates.attendees.map((email) => ({ email }));
-  }
-
-  if (body.updates.start && body.updates.end) {
-    patchBody.start = body.updates.allDay
-      ? { date: dateOnly(body.updates.start) }
-      : { dateTime: body.updates.start };
-    patchBody.end = body.updates.allDay
-      ? { date: normalizeAllDayEnd(body.updates.start, body.updates.end) }
-      : { dateTime: body.updates.end };
-  }
-
-  const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-      parsed.calendarId
-    )}/events/${encodeURIComponent(parsed.eventId)}`,
-    {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(patchBody)
+  try {
+    const decoded = await verifyFirebaseIdToken(body.idToken);
+    const limitResponse = checkRateLimit({
+      key: `calendar-edit:${decoded.uid}:${clientIp(request)}`,
+      limit: 30,
+      windowMs: 60_000
+    });
+    if (limitResponse) {
+      return limitResponse;
     }
-  );
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("Google Calendar edit failed:", errorText);
+    const accessToken = await getGoogleAccessToken(decoded.uid);
+    const patchBody: Record<string, unknown> = {};
+
+    if (body.updates.title !== undefined) {
+      patchBody.summary = body.updates.title;
+    }
+
+    if (body.updates.description !== undefined) {
+      patchBody.description = body.updates.description || null;
+    }
+
+    if (body.updates.location !== undefined) {
+      patchBody.location = body.updates.location || null;
+    }
+
+    if (body.updates.attendees !== undefined) {
+      patchBody.attendees = body.updates.attendees.map((email) => ({ email }));
+    }
+
+    if (body.updates.start && body.updates.end) {
+      patchBody.start = body.updates.allDay
+        ? { date: dateOnly(body.updates.start) }
+        : { dateTime: body.updates.start };
+      patchBody.end = body.updates.allDay
+        ? { date: normalizeAllDayEnd(body.updates.start, body.updates.end) }
+        : { dateTime: body.updates.end };
+    }
+
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+        parsed.calendarId
+      )}/events/${encodeURIComponent(parsed.eventId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(patchBody)
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Google Calendar edit failed:", errorText);
+      return NextResponse.json(
+        { error: "Unable to edit Google Calendar event" },
+        { status: response.status }
+      );
+    }
+
+    const edited = (await response.json()) as GoogleEvent;
+    return NextResponse.json({
+      event: normalizeGoogleEvent(parsed.calendarId, parsed.calendarId, edited)
+    });
+  } catch (error) {
+    logApiError("Calendar event edit failed:", error);
     return NextResponse.json(
       { error: "Unable to edit Google Calendar event" },
-      { status: response.status }
+      { status: 502 }
     );
   }
-
-  const edited = (await response.json()) as GoogleEvent;
-  return NextResponse.json({
-    event: normalizeGoogleEvent(parsed.calendarId, parsed.calendarId, edited)
-  });
 }

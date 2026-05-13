@@ -91,7 +91,8 @@ export async function exchangeCodeForRefreshToken(code: string) {
   const body = (await response.json()) as TokenResponse;
 
   if (!response.ok || !body.refresh_token) {
-    throw new Error(body.error_description ?? body.error ?? "Google did not return a refresh token");
+    console.error("Google OAuth token exchange failed:", body.error ?? body.error_description);
+    throw new Error("Unable to complete Google Calendar connection");
   }
 
   return body;
@@ -150,7 +151,8 @@ export async function getGoogleAccessToken(uid: string) {
   const body = (await response.json()) as TokenResponse;
 
   if (!response.ok || !body.access_token) {
-    throw new Error(body.error_description ?? body.error ?? "Unable to refresh Google access token");
+    console.error("Google OAuth token refresh failed:", body.error ?? body.error_description);
+    throw new Error("Unable to refresh Google Calendar access");
   }
 
   return body.access_token;

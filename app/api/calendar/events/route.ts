@@ -5,6 +5,7 @@ import {
   clientIp,
   isIsoLikeDateTime,
   isNonEmptyString,
+  logApiError,
   readJsonBody
 } from "@/lib/api-security";
 import { verifyFirebaseIdToken } from "@/lib/firebase-admin";
@@ -150,9 +151,12 @@ export async function POST(request: Request) {
 
           if (!eventsResponse.ok) {
             const errorText = await eventsResponse.text();
-            throw new Error(
-              `Unable to read events for ${calendar.summary ?? calendar.id}: ${errorText}`
-            );
+            console.error("Google Calendar events fetch failed:", {
+              calendarId: calendar.id,
+              status: eventsResponse.status,
+              error: errorText
+            });
+            throw new Error("Unable to read Google Calendar events");
           }
 
           const eventsBody = (await eventsResponse.json()) as GoogleEventsResponse;
@@ -198,13 +202,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ events });
   } catch (error) {
+    logApiError("Google Calendar events failed:", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to load Google Calendar events"
-      },
+      { error: "Unable to load Google Calendar events" },
       { status: 502 }
     );
   }

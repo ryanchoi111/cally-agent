@@ -4,6 +4,7 @@ import {
   checkRateLimit,
   clientIp,
   isNonEmptyString,
+  logApiError,
   readJsonBody
 } from "@/lib/api-security";
 import { verifyFirebaseIdToken } from "@/lib/firebase-admin";
@@ -44,13 +45,9 @@ export async function POST(request: Request) {
       authUrl: buildGoogleAuthUrl(state)
     });
   } catch (error) {
+    logApiError("Google OAuth start failed:", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to start Google Calendar connection."
-      },
+      { error: "Unable to start Google Calendar connection." },
       { status: 500 }
     );
   }
