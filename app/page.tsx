@@ -1255,14 +1255,6 @@ export default function Home() {
             <div className="chat-title">Cally</div>
             <div className="muted">Your Calendar Assistant</div>
           </div>
-          {/* <button
-            aria-label="Hide calendar agent"
-            className="icon-button"
-            onClick={() => setIsChatOpen(false)}
-            type="button"
-          >
-            <PanelRightClose size={18} />
-          </button> */}
         </header>
 
         <div className="message-list" ref={messageListRef}>
