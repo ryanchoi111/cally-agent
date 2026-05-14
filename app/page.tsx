@@ -835,7 +835,7 @@ export default function Home() {
           </div>
 
           <div className="signin-glass-card">
-            <div className="signin-prompt">Sign in with Google below.</div>
+            <div className="signin-prompt">Sign in with Google below</div>
             <button
               className="primary-button glass-button"
               onClick={handleSignIn}

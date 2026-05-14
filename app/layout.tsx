@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Cally Agent",
-  description: "Google Calendar assistant that optimizes your schedule using AI."
+  description: "Google Calendar assistant that optimizes your schedule using AI"
 };
 
 export default function RootLayout({
