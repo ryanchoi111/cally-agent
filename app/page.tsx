@@ -1276,6 +1276,8 @@ export default function Home() {
           ) : (
             <div className="message assistant">
               Hi, I&apos;m Cally, your calendar assistant who can optimize your calendar!
+              <br></br>
+              <br></br>
               Ask me about conflicts, meeting load, open focus time, or say something
               like &quot;schedule a planning block tomorrow at 2 PM for 45 minutes.&quot;
             </div>
